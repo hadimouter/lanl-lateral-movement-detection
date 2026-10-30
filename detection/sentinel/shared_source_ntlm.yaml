@@ -1,0 +1,91 @@
+id: 23a84255-fbd1-49be-accc-edfa0f23a240
+name: Compte utilisé en NTLM depuis une machine partagée par de nombreux comptes
+description: |
+  Détecte un compte utilisateur qui se connecte depuis une adresse source utilisée,
+  sur la journée, par au moins 10 comptes différents (connexions réussies ou
+  échouées), et qui a réussi au moins une authentification NTLM sur la même journée.
+  Un poste de travail sert normalement à une ou deux personnes. Un attaquant qui a
+  volé des identifiants les rejoue souvent depuis une même machine compromise, qui
+  devient anormalement partagée. NTLM est un indice compatible avec le pass-the-hash,
+  pas une preuve.
+  Règle 2 du projet LANL, logique rejouée sur les données de test : 38 journées
+  compromises sur 47 (rappel 0,81) pour environ 206 couples (compte, jour) alertés
+  par jour. Trop bruyante telle quelle : renseigner `allowed_shared_sources` avec les
+  serveurs légitimement partagés (rebond, Citrix, RDS) et les adresses de NAT/VPN.
+  Exécution quotidienne : un compte remonte au plus une fois par jour.
+  Format : celui du dépôt communautaire Azure-Sentinel (YAML). Pour un import par le
+  portail (Analytics > Import), il faut un modèle ARM au format JSON.
+severity: Medium
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+  - connectorId: WindowsSecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: 1d
+queryPeriod: 1d
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - LateralMovement
+  - DefenseEvasion
+relevantTechniques:
+  - T1550.002
+  - T1021.002
+  - T1078
+query: |
+  let min_accounts = 10;
+  // Serveurs légitimement partagés (rebond, Citrix, RDS) et adresses de NAT/VPN
+  let allowed_shared_sources = dynamic([]);
+  // Connexions réussies (4624) et échouées (4625) : un attaquant qui essaie des
+  // identifiants volés depuis la même machine la rend "partagée" même quand il échoue.
+  // Types 3 (réseau) et 10 (bureau à distance) uniquement.
+  let logons = SecurityEvent
+      | where EventID in (4624, 4625)
+      | where LogonType in (3, 10)
+      | where TargetUserName !endswith "$"
+      | where TargetUserName !in~ ("ANONYMOUS LOGON", "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
+      // domaine\compte : le compte local "Administrator" de chaque machine reste distinct
+      | extend Account = tolower(strcat(TargetDomainName, "\\", TargetUserName)),
+               // Adresse IP plutôt que WorkstationName : en NTLM, le nom de poste est
+               // déclaré par le client et peut être falsifié par un attaquant.
+               SourceIp = IpAddress,
+               TargetHost = toupper(tostring(split(Computer, ".")[0]));
+  // Connexions d'une machine vers une autre (on exclut les connexions locales)
+  let remote_logons = logons
+      | where isnotempty(SourceIp) and SourceIp !in ("-", "::1", "127.0.0.1")
+      | where SourceIp !in (allowed_shared_sources);
+  let shared_sources = remote_logons
+      | summarize AccountsOnSource = dcount(Account) by SourceIp
+      | where AccountsOnSource >= min_accounts;
+  // Comptes qui ont réussi au moins une connexion NTLM
+  let ntlm_accounts = logons
+      | where EventID == 4624 and AuthenticationPackageName == "NTLM"
+      | distinct Account;
+  remote_logons
+  | join kind=inner shared_sources on SourceIp
+  | join kind=inner ntlm_accounts on Account
+  | summarize FirstSeen = min(TimeGenerated),
+              LastSeen = max(TimeGenerated),
+              LogonCount = count(),
+              TargetHosts = make_set(TargetHost, 50),
+              DeclaredWorkstations = make_set(WorkstationName, 10),
+              AccountSid = take_any(TargetUserSid),
+              AccountName = take_any(TargetUserName),
+              AccountDomain = take_any(TargetDomainName)
+      by Account, SourceIp, AccountsOnSource
+  | order by AccountsOnSource desc
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+      - identifier: NTDomain
+        columnName: AccountDomain
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIp
+version: 1.1.0
+kind: Scheduled

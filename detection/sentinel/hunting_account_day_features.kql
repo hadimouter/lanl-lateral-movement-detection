@@ -1,0 +1,48 @@
+// Requête de chasse : variables principales du modèle, par compte, sur les dernières 24 h.
+// Classe les comptes selon les signaux qui comptent le plus pour le Random Forest
+// du projet LANL (adresse source partagée, NTLM, adresses source nouvelles).
+// À exécuter manuellement ou à exporter vers un modèle de scoring.
+// Bilan sur 24 h : le partage d'une machine n'est connu qu'en fin de période.
+// MITRE ATT&CK : T1078, T1021.002, T1550.002 (NTLM = indice, pas preuve)
+let baseline_days = 14d;
+let logons = SecurityEvent
+    | where TimeGenerated > ago(baseline_days + 1d)
+    | where EventID == 4624
+    | where LogonType in (3, 10)
+    | where TargetUserName !endswith "$"
+    | where TargetUserName !in~ ("ANONYMOUS LOGON", "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
+    // domaine\compte : le compte local "Administrator" de chaque machine reste distinct
+    | extend Account = tolower(strcat(TargetDomainName, "\\", TargetUserName)),
+             // Adresse IP plutôt que WorkstationName, déclaré par le client en NTLM
+             SourceIp = IpAddress,
+             TargetHost = toupper(tostring(split(Computer, ".")[0]))
+    | where isnotempty(SourceIp) and SourceIp !in ("-", "::1", "127.0.0.1");
+let today = logons | where TimeGenerated > ago(1d);
+// max_src_users : partage de l'adresse source la plus partagée utilisée par le compte
+let source_sharing = today
+    | summarize AccountsOnSource = dcount(Account) by SourceIp;
+let max_src_users = today
+    | distinct Account, SourceIp
+    | join kind=inner source_sharing on SourceIp
+    | summarize max_src_users = max(AccountsOnSource) by Account;
+// n_new_src_pc : adresses source absentes des 14 jours précédents
+let baseline = logons
+    | where TimeGenerated <= ago(1d)
+    | distinct Account, SourceIp;
+let new_sources = today
+    | distinct Account, SourceIp
+    | join kind=leftanti baseline on Account, SourceIp
+    | summarize n_new_src_pc = count() by Account;
+today
+| summarize n_logons = count(),
+            ntlm_share = round(countif(AuthenticationPackageName == "NTLM") * 1.0 / count(), 3),
+            n_src_pc = dcount(SourceIp),
+            n_dst_pc = dcount(TargetHost)
+    by Account
+| join kind=leftouter max_src_users on Account
+| join kind=leftouter new_sources on Account
+| project Account, n_logons, n_src_pc, n_dst_pc, ntlm_share,
+          max_src_users = coalesce(max_src_users, 0),
+          n_new_src_pc = coalesce(n_new_src_pc, 0)
+| where ntlm_share > 0
+| order by max_src_users desc, n_new_src_pc desc

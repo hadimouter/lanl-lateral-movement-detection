@@ -1,0 +1,82 @@
+id: a7c9debd-0533-49ac-bfa2-6182aa429c8a
+name: Compte utilisé en NTLM depuis une machine source jamais vue
+description: |
+  Détecte un compte utilisateur qui se connecte depuis une adresse source qu'il
+  n'a jamais utilisée pendant les 14 jours précédents, et qui a réussi au moins une
+  authentification NTLM dans les dernières 24 h.
+  Un utilisateur travaille depuis un petit nombre de postes habituels ; un attaquant
+  qui rejoue ses identifiants arrive depuis ses propres machines.
+  Règle 1 du projet LANL, logique rejouée sur les données de test : 32 journées
+  compromises sur 47 (rappel 0,68) pour environ 302 couples (compte, jour) alertés
+  par jour. Trop bruyante seule : à utiliser comme règle de chasse ou en corrélation
+  avec la règle "machine partagée".
+  Attention : si l'attaquant est déjà présent pendant les 14 jours de référence,
+  ses machines y figurent et ne sont plus "nouvelles". Les adresses attribuées par
+  DHCP qui changent créent aussi de fausses "nouvelles machines".
+  Format : celui du dépôt communautaire Azure-Sentinel (YAML). Pour un import par le
+  portail (Analytics > Import), il faut un modèle ARM au format JSON.
+severity: Low
+requiredDataConnectors:
+  - connectorId: SecurityEvents
+    dataTypes:
+      - SecurityEvent
+  - connectorId: WindowsSecurityEvents
+    dataTypes:
+      - SecurityEvent
+queryFrequency: 1d
+queryPeriod: 15d
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - LateralMovement
+  - DefenseEvasion
+relevantTechniques:
+  - T1550.002
+  - T1078
+query: |
+  let baseline_days = 14d;
+  let logons = SecurityEvent
+      | where TimeGenerated > ago(baseline_days + 1d)
+      | where EventID == 4624
+      | where LogonType in (3, 10)
+      | where TargetUserName !endswith "$"
+      | where TargetUserName !in~ ("ANONYMOUS LOGON", "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
+      // domaine\compte : le compte local "Administrator" de chaque machine reste distinct
+      | extend Account = tolower(strcat(TargetDomainName, "\\", TargetUserName)),
+               // Adresse IP plutôt que WorkstationName, déclaré par le client en NTLM
+               SourceIp = IpAddress,
+               TargetHost = toupper(tostring(split(Computer, ".")[0]))
+      | where isnotempty(SourceIp) and SourceIp !in ("-", "::1", "127.0.0.1");
+  // Adresses habituelles de chaque compte sur les 14 jours précédents
+  let baseline = logons
+      | where TimeGenerated <= ago(1d)
+      | distinct Account, SourceIp;
+  let today = logons
+      | where TimeGenerated > ago(1d);
+  let ntlm_accounts = today
+      | where AuthenticationPackageName == "NTLM"
+      | distinct Account;
+  today
+  | join kind=leftanti baseline on Account, SourceIp
+  | join kind=inner ntlm_accounts on Account
+  | summarize FirstSeen = min(TimeGenerated),
+              LastSeen = max(TimeGenerated),
+              LogonCount = count(),
+              TargetHosts = make_set(TargetHost, 50),
+              DeclaredWorkstations = make_set(WorkstationName, 10),
+              AccountName = take_any(TargetUserName),
+              AccountDomain = take_any(TargetDomainName)
+      by Account, SourceIp
+entityMappings:
+  - entityType: Account
+    fieldMappings:
+      - identifier: Name
+        columnName: AccountName
+      - identifier: NTDomain
+        columnName: AccountDomain
+  - entityType: IP
+    fieldMappings:
+      - identifier: Address
+        columnName: SourceIp
+version: 1.1.0
+kind: Scheduled

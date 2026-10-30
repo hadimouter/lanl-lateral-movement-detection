@@ -1,0 +1,8 @@
+altair==6.3.0
+duckdb==2.0.0
+marimo==0.25.2
+numpy==2.5.4
+polars==2.1.0
+pyarrow==26.0.0
+scikit-learn==1.9.1
+vl-convert-python==1.9.0.post1
