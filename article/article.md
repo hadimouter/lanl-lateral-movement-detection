@@ -109,7 +109,7 @@ C'est la façon la plus parlante de lire les résultats pour une équipe de séc
 | 50 alertes par jour | 55 % (38 à 69 %) | 1 sur 29 | 20 sur 37 |
 | 100 alertes par jour | 66 % (49 à 80 %) | 1 sur 48 | 24 sur 37 |
 
-La dernière colonne compte les comptes repérés au moins une fois. Pour une équipe de réponse à incident, c'est souvent ce qui compte : identifier le compte volé un jour suffit à lancer l'enquête. Et quand le modèle repère un compte, c'est presque toujours dès son premier jour compromis : avec 50 alertes par jour, 19 des 20 comptes repérés le sont le jour même. Les autres ne sont jamais repérés : le modèle voit vite les grosses vagues d'attaque, pas les usages isolés.
+La dernière colonne compte les comptes repérés au moins une fois. Pour une équipe de réponse à incident, c'est souvent ce qui compte : identifier le compte volé un jour suffit à lancer l'enquête. Et quand le modèle repère un compte, c'est presque toujours dès son premier jour compromis de la période de test : avec 50 alertes par jour, 19 des 20 comptes repérés le sont le jour même. (La plupart de ces comptes étaient déjà compromis avant le début du test : ce délai part de la mise en service du détecteur, pas de l'intrusion.) Les autres ne sont jamais repérés : le modèle voit vite les grosses vagues d'attaque, pas les usages isolés.
 
 ![Rappel et précision selon le budget d'alertes](figures/budget_alertes.png)
 
@@ -152,7 +152,7 @@ Les labels sont incomplets. Ils ne contiennent que ce que la red team a déclar�
 
 La conception des variables a été en partie guidée par le test. L'idée de la variable clé est née d'une erreur observée sur un jour de test. La validation confirme qu'elle était trouvable sans lui, mais avec un gain plus modeste : les chiffres du test sont donc à lire comme une borne haute.
 
-Le volume d'attaques est faible. 47 journées compromises en test, c'est assez pour comparer des méthodes, pas pour annoncer un taux de détection au pourcent près. Un ou deux cas de plus ou de moins font bouger le rappel de plusieurs points.
+Le volume d'attaques est faible. 47 journées compromises en test, c'est assez pour comparer des méthodes, pas pour annoncer un taux de détection au pourcent près : les fourchettes du tableau des résultats le montrent, à 10 alertes par jour le rappel se situe entre 15 % et 42 %.
 
 Les données ont plus de dix ans et viennent d'un seul environnement. Elles sont anonymisées, sans heure réelle, et la red team de LANL a un mode opératoire particulier : quelques machines de rebond, beaucoup de comptes, tout en NTLM. Un attaquant qui utilise chaque compte volé depuis le poste de sa victime, ou qui reste en Kerberos, ferait disparaître le signal principal. Le modèle a appris cette red team, pas toutes les red teams.
 
@@ -174,7 +174,7 @@ Un modèle dans un notebook ne protège personne. J'ai traduit les deux règles 
 
 | Signal | Technique ATT&CK | Champs Windows (événement 4624) |
 |---|---|---|
-| Machine source partagée, machine source nouvelle | T1078 Valid Accounts | `WorkstationName`, `IpAddress`, `TargetUserName` |
+| Machine source partagée, machine source nouvelle | T1078 Valid Accounts | `IpAddress`, `TargetUserName`, `TargetDomainName` |
 | Authentification NTLM inhabituelle (un indice, pas une preuve) | T1550.002 Pass the Hash | `AuthenticationPackageName` |
 | Connexions réseau vers de nombreuses machines | T1021.002 SMB/Windows Admin Shares | `LogonType` 3, `Computer` |
 
@@ -182,17 +182,17 @@ Le cœur de la règle principale tient en quelques lignes :
 
 ```kql
 let shared_sources = remote_logons
-    | summarize AccountsOnSource = dcount(Account) by SourceHost
+    | summarize AccountsOnSource = dcount(Account) by SourceIp
     | where AccountsOnSource >= 10;
 let ntlm_accounts = logons
     | where EventID == 4624 and AuthenticationPackageName == "NTLM"
     | distinct Account;
 remote_logons
-| join kind=inner shared_sources on SourceHost
+| join kind=inner shared_sources on SourceIp
 | join kind=inner ntlm_accounts on Account
 ```
 
-Faute d'espace Sentinel, j'ai rejoué la logique de chaque requête sur les données LANL. La traduction exacte du notebook redonne les mêmes chiffres à l'unité. Et l'exercice a amélioré les règles. Dans un vrai Active Directory, j'identifie le compte avec son domaine (sinon les comptes locaux « Administrator » de toutes les machines seraient confondus), la machine source par son adresse IP (en NTLM, le nom de poste est déclaré par le client et peut être falsifié), je ne garde que les connexions réseau et bureau à distance, et je compte séparément connexions réussies et échouées. La règle « machine partagée » garde ses 38 attaques avec 206 alertes par jour au lieu de 246 ; pour la règle « machine jamais vue », comparer aux 14 jours précédents plutôt qu'à tout l'historique fait passer de 23 à 32 attaques attrapées. Les deux tournent une fois par jour, pour qu'un compte ne remonte qu'une fois.
+Faute d'espace Sentinel, j'ai rejoué la logique de chaque requête sur les données LANL. La traduction exacte du notebook redonne les mêmes chiffres à l'unité. Et l'exercice a amélioré les règles. Dans un vrai Active Directory, j'identifie le compte avec son domaine (sinon les comptes locaux « Administrator » de toutes les machines seraient confondus), la machine source par son adresse IP (en NTLM, le nom de poste est déclaré par le client et peut être falsifié), je ne garde que les connexions réseau et bureau à distance, et je compte séparément connexions réussies et échouées. La règle « machine partagée » garde ses 38 attaques avec 206 alertes par jour au lieu de 246 ; pour la règle « machine jamais vue », comparer aux 13 jours précédents plutôt qu'à tout l'historique fait passer de 23 à 35 attaques attrapées (13 jours, parce que Sentinel limite la période d'analyse d'une règle à 14 jours). Les deux tournent une fois par jour, pour qu'un compte ne remonte qu'une fois.
 
 Une question revient toujours : pourquoi ne pas simplement utiliser Microsoft Defender for Identity ? Si l'entreprise en dispose, c'est la première ligne de défense : il surveille directement les contrôleurs de domaine et possède des alertes dédiées, dont « Suspected identity theft (pass-the-hash) ». Ma détection ne le remplace pas, elle le complète : elle ne demande que les journaux Windows déjà collectés dans le SIEM, chaque alerte s'explique variable par variable, et elle porte sur un signal comportemental, l'usage de nombreux comptes depuis une même machine, que l'on peut corréler avec les alertes de Defender.
 
@@ -200,15 +200,15 @@ Telles quelles, ces règles restent trop bruyantes pour une alerte directe. En p
 
 ## Ce que j'en retiens
 
-La meilleure amélioration n'est pas venue d'un meilleur algorithme mais d'une meilleure question. Passer de « que fait ce compte ? » à « depuis où le fait-il, et qui d'autre se connecte depuis là ? » a multiplié par sept le nombre d'attaques en tête de liste. Cette question m'est venue en regardant un cas raté, U8170, pas en réglant des paramètres.
+La meilleure amélioration n'est pas venue d'un meilleur algorithme mais d'une meilleure question. Passer de « que fait ce compte ? » à « depuis où le fait-il, et qui d'autre se connecte depuis là ? » a multiplié par sept le nombre d'attaques en tête de liste sur le test, un gain plus modeste mais bien réel sur la validation. Cette question m'est venue en regardant un cas raté, U8170, pas en réglant des paramètres.
 
 Anormal ne veut pas dire malveillant. Les comptes les plus étranges du réseau étaient des scripts bruyants. Sans labels, on trouve l'étrange ; pour trouver l'attaquant, il faut savoir ce qu'il fait.
 
 Une règle simple et bien pensée est une référence redoutable. La règle « machine partagée et NTLM » attrape autant d'attaques que le modèle à volume d'alertes égal. Le modèle n'apporte pas une détection magique, il apporte un classement, et donc la possibilité d'adapter le volume d'alertes à l'équipe.
 
-Enfin, la rigueur de la méthode compte autant que le résultat : découper par jours, ne jamais régler un seuil en regardant les données de test, vérifier un biais avant de se réjouir d'un résultat, et documenter ce qui échoue. La règle à l'historique contaminé ne figure pas dans les résultats, mais c'est probablement ce que j'ai appris de plus utile pour concevoir des détections.
+Enfin, la rigueur de la méthode compte autant que le résultat : découper par jours, garder une période de validation pour faire ses choix, ne jamais régler un seuil en regardant les données de test, donner des fourchettes plutôt que des chiffres secs, vérifier un biais avant de se réjouir d'un résultat, et documenter ce qui échoue. La règle à l'historique contaminé ne figure pas dans les résultats, mais c'est probablement ce que j'ai appris de plus utile pour concevoir des détections.
 
-Le code, les notebooks et les règles Sentinel sont disponibles sur GitHub.
+Le code, les notebooks et les règles Sentinel sont disponibles sur GitHub : [github.com/hadimouter/lanl-lateral-movement-detection](https://github.com/hadimouter/lanl-lateral-movement-detection).
 
 ## Glossaire
 

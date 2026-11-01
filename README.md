@@ -29,7 +29,7 @@ et 206 dans sa version KQL corrigée (notebook 07).
   378 fois le hasard. À volume d'alertes égal, il attrape autant d'attaques que la
   règle simple ; son apport est de classer les alertes pour réduire le volume.
 - Quand un compte compromis est repéré, c'est presque toujours dès son premier jour
-  compromis (19 comptes sur 20 à 50 alertes/jour).
+  compromis de la période de test (19 comptes sur 20 à 50 alertes/jour).
 - Le signal décisif est `max_src_users` : le nombre de comptes différents qui se
   connectent le même jour depuis la machine source. L'attaquant rejoue ses
   identifiants volés depuis quelques machines, qui deviennent anormalement partagées
@@ -52,7 +52,7 @@ Sept notebooks [marimo](https://marimo.io), un par étape :
 | `03_features.py` | 19 variables par (utilisateur, jour) : machines source et cibles, nouveauté, NTLM, partage de la machine source, écart à l'historique du compte |
 | `04_labels.py` | Labels : 176 couples (utilisateur, jour) compromis |
 | `05_detection.py` | Règles, Random Forest (`class_weight="balanced"`), Isolation Forest, k-means ; entraînement jours 1-10, validation jours 11-14 (choix des variables), test jours 15-29 (consulté une fois, modèle réentraîné sur 1-14) |
-| `06_evaluation.py` | Rappel, précision, F1, courbe précision/rappel, budgets d'alertes, analyse des attaques ratées |
+| `06_evaluation.py` | Rappel, précision, F1, courbe précision/rappel, budgets d'alertes jour par jour avec intervalles de confiance (bootstrap par compte), délai de détection, analyse des attaques ratées |
 | `07_restitution.py` | Mapping MITRE ATT&CK, règles Sentinel, vérification de la logique KQL sur les données |
 
 Le fichier compressé de 7 Go n'est jamais chargé en mémoire : DuckDB le lit en flux
@@ -67,7 +67,8 @@ et le parcourt en une minute environ.
   communautaire Azure-Sentinel ; l'import par le portail demande un modèle ARM en
   JSON) et une requête de chasse KQL. Compte identifié par `domaine\compte`, machine
   source par adresse IP (le nom de poste NTLM est falsifiable), connexions de type
-  3 et 10, exécution quotidienne. Leur logique a été rejouée en SQL sur les données
+  3 et 10, exécution quotidienne, période d'analyse de 14 jours au plus (limite
+  Sentinel). Leur logique a été rejouée en SQL sur les données
   LANL ; elles n'ont pas été exécutées sur un espace de travail Sentinel réel.
 - Complément, pas remplacement, de Microsoft Defender for Identity, qui détecte
   déjà le pass-the-hash sur les contrôleurs de domaine : ces règles n'utilisent que

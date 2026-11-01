@@ -51,7 +51,7 @@ def _(mo):
     | Fichier | Rôle |
     |---|---|
     | `shared_source_ntlm.yaml` | règle planifiée : compte en NTLM depuis une machine partagée par au moins 10 comptes (règle 2) |
-    | `new_source_ntlm.yaml` | règle planifiée : compte en NTLM depuis une machine jamais vue en 14 jours (règle 1) |
+    | `new_source_ntlm.yaml` | règle planifiée : compte en NTLM depuis une machine jamais vue en 13 jours (règle 1) |
     | `hunting_account_day_features.kql` | requête de chasse : les variables principales du modèle, par compte, sur 24 h |
 
     Les deux `.yaml` suivent le format du dépôt communautaire Azure-Sentinel
@@ -91,11 +91,17 @@ def _(mo):
       (4625). La règle 2 compte les deux pour mesurer le partage d'une machine
       (un attaquant qui essaie des identifiants la rend "partagée" même quand il
       échoue), mais n'exige une connexion NTLM **réussie** que pour le compte alerté.
-    - La règle 1 compare à une référence glissante des **14 jours précédents**,
-      au lieu de "jamais vue depuis le début des données".
+    - La règle 1 compare à une référence glissante des **13 jours précédents**,
+      au lieu de "jamais vue depuis le début des données". Sentinel limite la
+      période d'analyse d'une règle à 14 jours : 13 jours de référence + le jour analysé.
     - Le compte est identifié avec son domaine (`U1718@DOM1` et `U1718@C15244` sont
       deux comptes), seuls les types de connexion réseau et bureau à distance
       comptent, et la machine source LANL (`src_pc`) joue le rôle de l'adresse IP.
+    - Les connexions d'une machine vers elle-même sont exclues des deux côtés, mais
+      pas de la même façon : en SQL par `src_pc <> dst_pc` (on compare deux noms
+      de machines), en KQL en écartant les adresses locales ou vides (`127.0.0.1`,
+      `::1`, `-`), que porte une connexion locale. Le KQL ne peut pas comparer une
+      adresse IP au nom de la machine cible ; l'équivalence est donc approchée.
     - Le KQL tourne une fois par jour ; ici, chaque jour du dataset est traité à part.
 
     Pour comparer avec les labels, les alertes sont ramenées au couple
@@ -162,7 +168,7 @@ def _():
         FROM remote r JOIN shared USING (day, src_pc) JOIN ntlm USING (day, account_full)
     """
 
-    # Règle 1 : connexions réussies, référence des 14 jours précédents
+    # Règle 1 : connexions réussies, référence des 13 jours précédents (queryPeriod Sentinel limité à 14 jours)
     rule_1_kql = f"""
         WITH remote AS (
             SELECT DISTINCT day, account, account_full, src_pc FROM logons
@@ -177,7 +183,7 @@ def _():
         WHERE NOT EXISTS (
             SELECT 1 FROM remote b
             WHERE b.account_full = t.account_full AND b.src_pc = t.src_pc
-              AND b.day BETWEEN t.day - 14 AND t.day - 1
+              AND b.day BETWEEN t.day - 13 AND t.day - 1
         )
     """
     return rule_1_kql, rule_2_kql, rule_2_step5
@@ -207,7 +213,7 @@ def _(con, pl, rule_1_kql, rule_2_kql, rule_2_step5):
     pl.DataFrame([
         _evaluate("règle 2, logique de l'étape 5 (contrôle)", rule_2_step5),
         _evaluate("règle 2, version KQL", rule_2_kql),
-        _evaluate("règle 1, version KQL (référence 14 jours)", rule_1_kql),
+        _evaluate("règle 1, version KQL (référence 13 jours)", rule_1_kql),
     ])
     return
 
@@ -223,8 +229,8 @@ def _(mo):
       de 246. Exiger une connexion NTLM *réussie* écarte des comptes qui n'ont fait
       qu'échouer, et ne garder que les connexions réseau et bureau à distance
       retire du bruit.
-    - **Règle 1 en KQL** : 32 attaques au lieu de 23, avec moins d'alertes (302 au
-      lieu de 403). Une référence glissante de 14 jours fonctionne mieux que "jamais
+    - **Règle 1 en KQL** : 35 attaques au lieu de 23, avec moins d'alertes (315 au
+      lieu de 403). Une référence glissante de 13 jours fonctionne mieux que "jamais
       vue depuis le début" : une machine utilisée il y a un mois redevient "nouvelle".
 
     Les deux règles restent trop bruyantes pour une alerte directe (200 à 300 par

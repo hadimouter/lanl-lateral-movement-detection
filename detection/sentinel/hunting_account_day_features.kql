@@ -4,7 +4,7 @@
 // À exécuter manuellement ou à exporter vers un modèle de scoring.
 // Bilan sur 24 h : le partage d'une machine n'est connu qu'en fin de période.
 // MITRE ATT&CK : T1078, T1021.002, T1550.002 (NTLM = indice, pas preuve)
-let baseline_days = 14d;
+let baseline_days = 13d;
 let logons = SecurityEvent
     | where TimeGenerated > ago(baseline_days + 1d)
     | where EventID == 4624
@@ -25,7 +25,7 @@ let max_src_users = today
     | distinct Account, SourceIp
     | join kind=inner source_sharing on SourceIp
     | summarize max_src_users = max(AccountsOnSource) by Account;
-// n_new_src_pc : adresses source absentes des 14 jours précédents
+// n_new_src_pc : adresses source absentes des 13 jours précédents
 let baseline = logons
     | where TimeGenerated <= ago(1d)
     | distinct Account, SourceIp;

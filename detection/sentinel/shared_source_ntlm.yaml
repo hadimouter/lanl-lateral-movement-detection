@@ -1,21 +1,23 @@
+# Règle 2 du projet LANL : compte en NTLM depuis une machine partagée par beaucoup de comptes.
+#
+# Un poste de travail sert normalement à une ou deux personnes. Un attaquant qui a volé
+# des identifiants les rejoue souvent depuis une même machine compromise, qui devient
+# anormalement partagée. NTLM est un indice compatible avec le pass-the-hash, pas une preuve.
+#
+# Logique rejouée en SQL sur les données de test LANL (notebook 07) : 38 journées
+# compromises sur 47 (rappel 0,81) pour environ 206 couples (compte, jour) alertés par jour.
+# Trop bruyante telle quelle : renseigner allowed_shared_sources avec les serveurs
+# légitimement partagés (rebond, Citrix, RDS) et les adresses de NAT/VPN.
+# Jamais exécutée sur un vrai espace Sentinel : à valider avant activation.
+#
+# Format : YAML du dépôt communautaire Azure-Sentinel. Pour un import par le portail
+# (Analytics > Import), il faut un modèle ARM au format JSON.
 id: 23a84255-fbd1-49be-accc-edfa0f23a240
-name: Compte utilisé en NTLM depuis une machine partagée par de nombreux comptes
+name: Account using NTLM from a widely shared source host
 description: |
-  Détecte un compte utilisateur qui se connecte depuis une adresse source utilisée,
-  sur la journée, par au moins 10 comptes différents (connexions réussies ou
-  échouées), et qui a réussi au moins une authentification NTLM sur la même journée.
-  Un poste de travail sert normalement à une ou deux personnes. Un attaquant qui a
-  volé des identifiants les rejoue souvent depuis une même machine compromise, qui
-  devient anormalement partagée. NTLM est un indice compatible avec le pass-the-hash,
-  pas une preuve.
-  Règle 2 du projet LANL, logique rejouée sur les données de test : 38 journées
-  compromises sur 47 (rappel 0,81) pour environ 206 couples (compte, jour) alertés
-  par jour. Trop bruyante telle quelle : renseigner `allowed_shared_sources` avec les
-  serveurs légitimement partagés (rebond, Citrix, RDS) et les adresses de NAT/VPN.
-  Exécution quotidienne : un compte remonte au plus une fois par jour.
-  Format : celui du dépôt communautaire Azure-Sentinel (YAML). Pour un import par le
-  portail (Analytics > Import), il faut un modèle ARM au format JSON.
+  Identifies a user account that authenticates with NTLM from a source IP used by at least 10 distinct accounts on the same day. Stolen credentials are often replayed from a single compromised host, which becomes unusually shared.
 severity: Medium
+status: InPreview
 requiredDataConnectors:
   - connectorId: SecurityEvents
     dataTypes:
@@ -47,12 +49,13 @@ query: |
       | where TargetUserName !endswith "$"
       | where TargetUserName !in~ ("ANONYMOUS LOGON", "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
       // domaine\compte : le compte local "Administrator" de chaque machine reste distinct
+      // Adresse IP plutôt que WorkstationName : en NTLM, le nom de poste est déclaré
+      // par le client et peut être falsifié par un attaquant
       | extend Account = tolower(strcat(TargetDomainName, "\\", TargetUserName)),
-               // Adresse IP plutôt que WorkstationName : en NTLM, le nom de poste est
-               // déclaré par le client et peut être falsifié par un attaquant.
                SourceIp = IpAddress,
                TargetHost = toupper(tostring(split(Computer, ".")[0]));
-  // Connexions d'une machine vers une autre (on exclut les connexions locales)
+  // Connexions d'une machine vers une autre : une connexion d'une machine vers
+  // elle-même porte une adresse locale ou vide, exclue ici
   let remote_logons = logons
       | where isnotempty(SourceIp) and SourceIp !in ("-", "::1", "127.0.0.1")
       | where SourceIp !in (allowed_shared_sources);
@@ -66,12 +69,13 @@ query: |
   remote_logons
   | join kind=inner shared_sources on SourceIp
   | join kind=inner ntlm_accounts on Account
-  | summarize FirstSeen = min(TimeGenerated),
-              LastSeen = max(TimeGenerated),
+  // Le SID est pris sur une connexion réussie : sur un échec (4625), il vaut souvent S-1-0-0
+  | summarize StartTime = min(TimeGenerated),
+              EndTime = max(TimeGenerated),
               LogonCount = count(),
               TargetHosts = make_set(TargetHost, 50),
               DeclaredWorkstations = make_set(WorkstationName, 10),
-              AccountSid = take_any(TargetUserSid),
+              AccountSid = take_anyif(TargetUserSid, EventID == 4624),
               AccountName = take_any(TargetUserName),
               AccountDomain = take_any(TargetDomainName)
       by Account, SourceIp, AccountsOnSource
@@ -83,9 +87,11 @@ entityMappings:
         columnName: AccountName
       - identifier: NTDomain
         columnName: AccountDomain
+      - identifier: Sid
+        columnName: AccountSid
   - entityType: IP
     fieldMappings:
       - identifier: Address
         columnName: SourceIp
-version: 1.1.0
+version: 1.2.0
 kind: Scheduled

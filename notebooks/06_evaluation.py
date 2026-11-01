@@ -478,8 +478,13 @@ def _(mo):
 
     La question d'un RSSI : un compte volé, on le repère au bout de combien de
     jours ? Pour chaque compte compromis pendant le test, on compare son premier
-    jour compromis et le premier jour où la forêt lève une alerte sur une de ses
-    journées compromises (budget par jour).
+    jour compromis **de la période de test** et le premier jour où la forêt lève
+    une alerte sur une de ses journées compromises (budget par jour).
+
+    Attention : 29 de ces 37 comptes étaient déjà compromis avant le jour 15,
+    pendant l'entraînement. Le délai mesuré part donc du début de la période de
+    test, pas du vrai début de la compromission : c'est un délai "à partir du
+    moment où le détecteur est en service", pas un délai depuis l'intrusion.
     """)
     return
 
